@@ -150,40 +150,21 @@ install_firewall() {
     read -p "请选择 [1-3]: " install_choice
 
     case "$install_choice" in
-        1)
-            TARGET_FW="ufw"
-            ;;
-        2)
-            TARGET_FW="firewalld"
-            ;;
-        3)
-            TARGET_FW="iptables"
-            ;;
-        *)
-            printf "${RED}❌ 无效的选择。\n${NC}"
-            return
-            ;;
+        1) TARGET_FW="ufw" ;;
+        2) TARGET_FW="firewalld" ;;
+        3) TARGET_FW="iptables" ;;
+        *) printf "${RED}❌ 无效的选择。\n${NC}"; return ;;
     esac
 
-    # 检查系统中是否已经安装了“别的不同版本”的防火墙
     has_other_fw=0
     other_fw_name=""
 
     if [ "$TARGET_FW" != "ufw" ] && command -v ufw >/dev/null 2>&1; then
-        has_other_fw=1
-        other_fw_name="UFW"
+        has_other_fw=1; other_fw_name="UFW"
     elif [ "$TARGET_FW" != "firewalld" ] && command -v firewall-cmd >/dev/null 2>&1; then
-        has_other_fw=1
-        other_fw_name="Firewalld"
-    elif [ "$TARGET_FW" != "iptables" ] && command -v iptables >/dev/null 2>&1; then
-        # 简单判定 iptables 是否存在（大多数系统自带基础 iptables，这里主要防范用户装了完整包）
-        if dpkg -l 2>/dev/null | grep -q iptables-persistent || rpm -q iptables-services 2>/dev/null | grep -q iptables; then
-            has_other_fw=1
-            other_fw_name="Iptables"
-        fi
+        has_other_fw=1; other_fw_name="Firewalld"
     fi
 
-    # 如果要安装的正是当前已经安装的
     if [ "$TARGET_FW" == "ufw" ] && command -v ufw >/dev/null 2>&1; then
         printf "${GREEN}✔ 检测到系统已经安装了 UFW 防火墙，无需重复安装！\n${NC}"
         return
@@ -192,7 +173,6 @@ install_firewall() {
         return
     fi
 
-    # 如果检测到存在其他防火墙，提示先卸载
     if [ "$has_other_fw" -eq 1 ]; then
         printf "${RED}❌ 检测到系统当前已安装了【${other_fw_name}】防火墙！\n${NC}"
         printf "${YELLOW}⚠️ 为了防止多防火墙冲突导致规则失效，请先手动卸载现有的 ${other_fw_name} 后再尝试安装新防火墙。\n${NC}"
@@ -229,19 +209,52 @@ install_firewall() {
             printf "${GREEN}✔ Iptables 防火墙安装完成。\n${NC}"
             ;;
     esac
-    
-    # 重新获取一次当前的防火墙类型
     get_distro_and_fw
 }
 
-# ----------------- 4. 启停与控制防火墙（自带默认放行常用端口规则） -----------------
+# ----------------- 4. 智能检测并启停防火墙 -----------------
 control_firewall() {
-    echo " 1. 开启 / 启动防火墙"
-    echo " 2. 关闭 / 停止防火墙"
-    read -p "请选择操作 [1-2]: " sub_choice
-    
-    case "$sub_choice" in
-        1)
+    echo "=================================================="
+    echo "=== 正在智能检测防火墙当前运行状态 ==="
+    echo "=================================================="
+
+    # 动态判断当前防火墙是否在运行
+    is_running=0
+    if [ "$FW_TYPE" == "ufw" ]; then
+        if ufw status | grep -q "Status: active"; then
+            is_running=1
+        fi
+    elif [ "$FW_TYPE" == "firewalld" ]; then
+        if systemctl is-active --quiet firewalld; then
+            is_running=1
+        fi
+    elif [ "$FW_TYPE" == "iptables" ]; then
+        # 简单判定：如果INPUT链有规则或者iptables服务启动
+        if iptables -L INPUT -n | grep -q "ACCEPT"; then
+            is_running=1
+        fi
+    fi
+
+    if [ "$is_running" -eq 1 ]; then
+        printf "${GREEN}✔ 当前防火墙状态：【运行中 (已开启)】\n${NC}"
+        read -p "检测到防火墙已开启，是否要将其【关闭】？[y/n]: " choice
+        if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
+            echo "正在关闭防火墙..."
+            if [ "$FW_TYPE" == "ufw" ]; then
+                ufw disable
+            elif [ "$FW_TYPE" == "firewalld" ]; then
+                systemctl disable --now firewalld
+            elif [ "$FW_TYPE" == "iptables" ]; then
+                iptables -F
+            fi
+            printf "${YELLOW}⚠️ 防火墙已成功关闭。\n${NC}"
+        else
+            echo "操作已取消。"
+        fi
+    else
+        printf "${YELLOW}⚠️ 当前防火墙状态：【未激活 (已关闭)】\n${NC}"
+        read -p "检测到防火墙已关闭，是否要将其【开启】？[y/n]: " choice
+        if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
             echo "正在自动放行常用远程连接端口 (如 22 端口)，防止断开..."
             if [ "$FW_TYPE" == "ufw" ]; then
                 ufw allow 22/tcp >/dev/null 2>&1
@@ -254,19 +267,10 @@ control_firewall() {
                 iptables -A INPUT -p tcp --dport 22 -j ACCEPT
             fi
             printf "${GREEN}✔ 防火墙已成功开启，并已自动放行常用 SSH 端口（22）。\n${NC}"
-            ;;
-        2)
-            if [ "$FW_TYPE" == "ufw" ]; then
-                ufw disable
-            elif [ "$FW_TYPE" == "firewalld" ]; then
-                systemctl disable --now firewalld
-            fi
-            printf "${YELLOW}⚠️ 防火墙已关闭。\n${NC}"
-            ;;
-        *)
-            echo "无效选项"
-            ;;
-    esac
+        else
+            echo "操作已取消。"
+        fi
+    fi
 }
 
 # ----------------- 5. 放行端口功能（全防火墙强化适配） -----------------
@@ -373,7 +377,7 @@ while true; do
     echo " 1. 检测系统防火墙安装与运行状态"
     echo " 2. 查看已放行的端口列表"
     echo " 3. 安装指定防火墙 (带冲突检测)"
-    echo " 4. 开启 / 关闭防火墙服务"
+    echo " 4. 智能开启 / 关闭防火墙服务"
     echo " 5. 放行指定端口 (TCP/UDP)"
     echo " 6. 删除指定端口规则"
     echo " 0. 退出当前防火墙子菜单"
