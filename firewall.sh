@@ -141,8 +141,20 @@ list_allowed_ports() {
     esac
 }
 
-# ----------------- 3. 安装防火墙功能 -----------------
+# ----------------- 3. 安装防火墙功能（带智能检测） -----------------
 install_firewall() {
+    # 先检查是否已经安装
+    if [ "$FW_TYPE" == "ufw" ] && command -v ufw >/dev/null 2>&1; then
+        printf "${GREEN}✔ 检测到系统已经安装了 UFW 防火墙，无需重复安装！\n${NC}"
+        return
+    elif [ "$FW_TYPE" == "firewalld" ] && command -v firewall-cmd >/dev/null 2>&1; then
+        printf "${GREEN}✔ 检测到系统已经安装了 Firewalld 防火墙，无需重复安装！\n${NC}"
+        return
+    elif [ "$FW_TYPE" == "iptables" ] && command -v iptables >/dev/null 2>&1; then
+        printf "${GREEN}✔ 检测到系统已经安装了 Iptables 防火墙，无需重复安装！\n${NC}"
+        return
+    fi
+
     echo "=== 正在根据系统类型安装防火墙组件 ==="
     case "$OS" in
         ubuntu|debian|raspbian)
@@ -181,8 +193,7 @@ control_firewall() {
             if [ "$FW_TYPE" == "ufw" ]; then
                 ufw enable
             elif [ "$FW_TYPE" == "firewalld" ]; then
-                systemctl disable --now firewalld 2>/dev/null
-                systemctl enable --now firewalld | sed 's/Firewall/防火墙/g'
+                systemctl enable --now firewalld
             fi
             printf "${GREEN}✔ 防火墙已成功开启。\n${NC}"
             ;;
@@ -190,8 +201,7 @@ control_firewall() {
             if [ "$FW_TYPE" == "ufw" ]; then
                 ufw disable
             elif [ "$FW_TYPE" == "firewalld" ]; then
-                systemctl disable --now firewalld 2>/dev/null
-                echo "防火墙已停止并在系统启动时禁用"
+                systemctl disable --now firewalld
             fi
             printf "${YELLOW}⚠️ 防火墙已关闭。\n${NC}"
             ;;
@@ -327,7 +337,7 @@ while true; do
             delete_port
             ;;
         0)
-            echo "已退出防火墙管理子脚本。"
+            echo "已退出防火墙管理子菜单。"
             break
             ;;
         *)
