@@ -181,7 +181,8 @@ control_firewall() {
             if [ "$FW_TYPE" == "ufw" ]; then
                 ufw enable
             elif [ "$FW_TYPE" == "firewalld" ]; then
-                systemctl enable --now firewalld
+                systemctl disable --now firewalld 2>/dev/null
+                systemctl enable --now firewalld | sed 's/Firewall/防火墙/g'
             fi
             printf "${GREEN}✔ 防火墙已成功开启。\n${NC}"
             ;;
@@ -189,7 +190,8 @@ control_firewall() {
             if [ "$FW_TYPE" == "ufw" ]; then
                 ufw disable
             elif [ "$FW_TYPE" == "firewalld" ]; then
-                systemctl disable --now firewalld
+                systemctl disable --now firewalld 2>/dev/null
+                echo "防火墙已停止并在系统启动时禁用"
             fi
             printf "${YELLOW}⚠️ 防火墙已关闭。\n${NC}"
             ;;
