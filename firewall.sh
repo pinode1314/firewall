@@ -26,7 +26,6 @@ get_distro_and_fw() {
         OS="unknown"
     fi
 
-    # 判断主流包管理器/防火墙归属
     case "$OS" in
         ubuntu|debian|raspbian)
             FW_TYPE="ufw"
@@ -35,12 +34,12 @@ get_distro_and_fw() {
             FW_TYPE="firewalld"
             ;;
         alpine)
-            FW_TYPE="iptables" # Alpine 常见直接使用 iptables
+            FW_TYPE="iptables"
             ;;
         *)
             FW_TYPE="unknown"
             ;;
-    esac
+    es>
 }
 
 get_distro_and_fw
@@ -83,7 +82,46 @@ check_firewall_status() {
     esac
 }
 
-# ----------------- 2. 安装防火墙功能 -----------------
+# ----------------- 2. 查看已放行的端口列表（新增功能） -----------------
+list_allowed_ports() {
+    echo "=================================================="
+    echo "=== 正在获取当前已放行的端口规则 ==="
+    echo "=================================================="
+
+    case "$FW_TYPE" in
+        ufw)
+            if command -v ufw >/dev/null 2>&1; then
+                echo "--- UFW 放行规则列表 ---"
+                ufw status numbered
+            else
+                printf "${YELLOW}⚠️ UFW 未安装\n${NC}"
+            fi
+            ;;
+        firewalld)
+            if command -v firewall-cmd >/dev/null 2>&1; then
+                echo "--- Firewalld 已放行端口 ---"
+                firewall-cmd --zone=public --list-ports
+                echo "--- Firewalld 已放行服务 ---"
+                firewall-cmd --zone=public --list-services
+            else
+                printf "${YELLOW}⚠️ Firewalld 未安装\n${NC}"
+            fi
+            ;;
+        iptables)
+            if command -v iptables >/dev/null 2>&1; then
+                echo "--- Iptables INPUT 规则 ---"
+                iptables -L INPUT -n -v --line-numbers
+            else
+                printf "${YELLOW}⚠️ Iptables 未安装\n${NC}"
+            fi
+            ;;
+        *)
+            printf "${RED}❌ 无法识别的防火墙类型\n${NC}"
+            ;;
+    esac
+}
+
+# ----------------- 3. 安装防火墙功能 -----------------
 install_firewall() {
     echo "=== 正在根据系统类型安装防火墙组件 ==="
     case "$OS" in
@@ -112,7 +150,7 @@ install_firewall() {
     esac
 }
 
-# ----------------- 3. 启停与控制防火墙 -----------------
+# ----------------- 4. 启停与控制防火墙 -----------------
 control_firewall() {
     echo " 1. 开启/启动防火墙"
     echo " 2. 关闭/停止防火墙"
@@ -124,8 +162,6 @@ control_firewall() {
                 ufw enable
             elif [ "$FW_TYPE" == "firewalld" ]; then
                 systemctl enable --now firewalld
-            elif [ "$FW_TYPE" == "iptables" ]; then
-                echo "Iptables 采用规则即时生效，可直接通过放行规则控制。"
             fi
             printf "${GREEN}✔ 防火墙已尝试开启。\n${NC}"
             ;;
@@ -143,7 +179,7 @@ control_firewall() {
     esac
 }
 
-# ----------------- 4. 放行端口功能 -----------------
+# ----------------- 5. 放行端口功能 -----------------
 allow_port() {
     read -p "请输入要放行的端口号 (例如 80 或 443): " PORT
     read -p "请选择协议类型 [1. tcp / 2. udp / 3. 两者都要]: " PROTO_CHOICE
@@ -188,7 +224,7 @@ allow_port() {
     printf "${GREEN}✔ 端口 ${PORT} 放行操作已执行完成。\n${NC}"
 }
 
-# ----------------- 5. 删除/关闭已放行端口功能 -----------------
+# ----------------- 6. 删除/关闭已放行端口功能 -----------------
 delete_port() {
     read -p "请输入要删除/关闭的端口号: " PORT
     read -p "请选择协议类型 [1. tcp / 2. udp / 3. 两者都要]: " PROTO_CHOICE
@@ -237,31 +273,35 @@ delete_port() {
 while true; do
     echo ""
     printf "${SKYBLUE}=========================================\n${NC}"
-    printf "${SKYBLUE}      🛡️ 多系统防火墙管理脚本 🛡️       \n${NC}"
+    printf "${SKYBLUE}      🛡️ 多系统防火墙管理子脚本 🛡️       \n${NC}"
     printf "${SKYBLUE}=========================================\n${NC}"
     echo " 1. 检测系统防火墙安装与运行状态"
-    echo " 2. 安装当前系统对应防火墙"
-    echo " 3. 开启 / 关闭防火墙服务"
-    echo " 4. 放行指定端口 (TCP/UDP)"
-    echo " 5. 删除指定端口规则"
+    echo " 2. 查看已放行的端口列表"
+    echo " 3. 安装当前系统对应防火墙"
+    echo " 4. 开启 / 关闭防火墙服务"
+    echo " 5. 放行指定端口 (TCP/UDP)"
+    echo " 6. 删除指定端口规则"
     echo " 0. 退出当前防火墙子菜单"
     printf "${SKYBLUE}=========================================\n${NC}"
-    read -p "请选择操作 [0-5]: " CHOICE
+    read -p "请选择操作 [0-6]: " CHOICE
 
     case "$CHOICE" in
         1)
             check_firewall_status
             ;;
         2)
-            install_firewall
+            list_allowed_ports
             ;;
         3)
-            control_firewall
+            install_firewall
             ;;
         4)
-            allow_port
+            control_firewall
             ;;
         5)
+            allow_port
+            ;;
+        6)
             delete_port
             ;;
         0)
@@ -269,7 +309,7 @@ while true; do
             break
             ;;
         *)
-            printf "${RED}❌ 无效选项，请输入 0 到 5 之间的数字。\n${NC}"
+            printf "${RED}❌ 无效选项，请输入 0 到 6 之间的数字。\n${NC}"
             ;;
     esac
 done
