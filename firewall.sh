@@ -5,7 +5,7 @@ RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
 SKYBLUE='\033[1;36m'
-NC='\033[0m' # 恢复默认颜色
+NC='\033[0m'
 
 # 检查是否为 root 用户
 if [ "$EUID" -ne 0 ]; then
@@ -13,49 +13,51 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# ----------------- 系统发行版与防火墙工具识别 -----------------
+# ----------------- 实时精准安全检测函数 -----------------
 get_distro_and_fw() {
+    hash -r 2>/dev/null
+
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         OS=$ID
-    elif [ -f /etc/debian_version ]; then
-        OS="debian"
-    elif [ -f /etc/redhat-release ]; then
-        OS="rhel"
     else
         OS="unknown"
     fi
 
-    case "$OS" in
-        ubuntu|debian|raspbian)
-            FW_TYPE="ufw"
-            ;;
-        centos|rhel|fedora|rocky|almalinux)
-            FW_TYPE="firewalld"
-            ;;
-        alpine)
+    if [ -x /usr/sbin/ufw ] || [ -x /sbin/ufw ]; then
+        FW_TYPE="ufw"
+        return
+    fi
+
+    if [ -x /usr/bin/firewall-cmd ] || [ -x /sbin/firewall-cmd ]; then
+        FW_TYPE="firewalld"
+        return
+    fi
+
+    if [ -x /usr/sbin/iptables ] || [ -x /sbin/iptables ]; then
+        if [ -n "$(iptables -L INPUT -n 2>/dev/null)" ] || dpkg -l | grep -q iptables-persistent 2>/dev/null || rpm -q iptables-services &>/dev/null; then
             FW_TYPE="iptables"
-            ;;
-        *)
-            FW_TYPE="unknown"
-            ;;
-    esac
+            return
+        fi
+    fi
+
+    FW_TYPE="none"
 }
 
-get_distro_and_fw
-
-# ----------------- 1. 检测系统防火墙安装与运行状态 -----------------
+# ----------------- 1. 检测系统防火墙安装与运行状态（含规则） -----------------
 check_firewall_status() {
+    get_distro_and_fw
+    
     echo "=================================================="
-    echo "=== 正在检测当前系统的防火墙状态 ==="
-    echo "系统类型: $OS | 防火墙类型: $FW_TYPE"
+    echo "=== 正在检测当前系统的防火墙状态与规则 ==="
+    echo "系统类型: $OS | 当前防火墙: $FW_TYPE"
     echo "=================================================="
 
     case "$FW_TYPE" in
         ufw)
-            if command -v ufw >/dev/null 2>&1; then
+            if [ -x /usr/sbin/ufw ] || [ -x /sbin/ufw ]; then
                 printf "${GREEN}✔ UFW 防火墙已安装\n${NC}"
-                ufw status verbose | sed \
+                ufw status numbered | sed \
                     -e 's/Status: inactive/防火墙状态: 未激活 (已关闭)/g' \
                     -e 's/Status: active/防火墙状态: 已激活 (运行中)/g' \
                     -e 's/to/目标/g' \
@@ -64,119 +66,57 @@ check_firewall_status() {
                     -e 's/ALLOW/允许/g' \
                     -e 's/DENY/拒绝/g'
             else
-                printf "${YELLOW}⚠️ UFW 防火墙未安装\n${NC}"
+                FW_TYPE="none"
+                printf "${YELLOW}⚠️ 当前系统中未检测到任何可用的主流防火墙（已安全卸载或未安装）\n${NC}"
             fi
             ;;
         firewalld)
-            if command -v firewall-cmd >/dev/null 2>&1; then
+            if [ -x /usr/bin/firewall-cmd ] || [ -x /sbin/firewall-cmd ]; then
                 printf "${GREEN}✔ Firewalld 防火墙已安装\n${NC}"
-                systemctl status firewalld --no-pager | sed \
-                    -e 's/Active: active (running)/运行状态: 正在运行 (已开启)/g' \
-                    -e 's/Active: inactive (dead)/运行状态: 未运行 (已关闭)/g'
+                systemctl status firewalld --no-pager
+                echo "--- 已放行端口 ---"
+                firewall-cmd --zone=public --list-ports 2>/dev/null
             else
-                printf "${YELLOW}⚠️ Firewalld 防火墙未安装\n${NC}"
+                FW_TYPE="none"
+                printf "${YELLOW}⚠️ 当前系统中未检测到任何可用的主流防火墙（已安全卸载或未安装）\n${NC}"
             fi
             ;;
         iptables)
-            if command -v iptables >/dev/null 2>&1; then
-                printf "${GREEN}✔ Iptables 防火墙已安装\n${NC}"
-                iptables -L -n -v
-            else
-                printf "${YELLOW}⚠️ Iptables 防火墙未安装\n${NC}"
-            fi
+            printf "${GREEN}✔ Iptables 防火墙已安装\n${NC}"
+            iptables -L INPUT -n -v --line-numbers
             ;;
-        *)
-            printf "${RED}❌ 未能自动识别适配的防火墙组件\n${NC}"
+        none|*)
+            printf "${YELLOW}⚠️ 当前系统中未检测到任何可用的主流防火墙（已安全卸载或未安装）\n${NC}"
             ;;
     esac
 }
 
-# ----------------- 2. 查看已放行的端口列表 -----------------
-list_allowed_ports() {
-    echo "=================================================="
-    echo "=== 正在获取当前已放行的端口规则 ==="
-    echo "=================================================="
-
-    case "$FW_TYPE" in
-        ufw)
-            if command -v ufw >/dev/null 2>&1; then
-                echo "--- UFW 放行规则列表 ---"
-                ufw status numbered | sed \
-                    -e 's/Status: inactive/防火墙状态: 未激活 (已关闭)/g' \
-                    -e 's/Status: active/防火墙状态: 已激活 (运行中)/g' \
-                    -e 's/To/目标端口/g' \
-                    -e 's/Action/执行动作/g' \
-                    -e 's/From/来源/g' \
-                    -e 's/Anywhere/任何来源/g' \
-                    -e 's/ALLOW/允许/g' \
-                    -e 's/DENY/拒绝/g'
-            else
-                printf "${YELLOW}⚠️ UFW 防火墙未安装\n${NC}"
-            fi
-            ;;
-        firewalld)
-            if command -v firewall-cmd >/dev/null 2>&1; then
-                echo "--- Firewalld 已放行端口 ---"
-                ports=$(firewall-cmd --zone=public --list-ports)
-                [ -z "$ports" ] && echo "暂无自定义放行端口" || echo "$ports"
-                
-                echo "--- Firewalld 已放行服务 ---"
-                services=$(firewall-cmd --zone=public --list-services)
-                [ -z "$services" ] && echo "暂无放行服务" || echo "$services"
-            else
-                printf "${YELLOW}⚠️ Firewalld 防火墙未安装\n${NC}"
-            fi
-            ;;
-        iptables)
-            if command -v iptables >/dev/null 2>&1; then
-                echo "--- Iptables 输入(INPUT)规则 ---"
-                iptables -L INPUT -n -v --line-numbers
-            else
-                printf "${YELLOW}⚠️ Iptables 防火墙未安装\n${NC}"
-            fi
-            ;;
-        *)
-            printf "${RED}❌ 无法识别的防火墙类型\n${NC}"
-            ;;
-    esac
-}
-
-# ----------------- 3. 手动选择安装防火墙（带版本冲突检测） -----------------
+# ----------------- 2. 手动选择安装防火墙（安装后自动放行默认基础端口） -----------------
 install_firewall() {
+    get_distro_and_fw
     echo "请选择你要安装的防火墙类型："
     echo " 1. UFW (适用于 Ubuntu/Debian)"
     echo " 2. Firewalld (适用于 CentOS/RHEL/Fedora)"
-    echo " 3. Iptables (适用于 Alpine 或通用底层)"
-    read -p "请选择 [1-3]: " install_choice
+    echo " 3. Iptables"
+    echo " 0. 返回上一级菜单"
+    read -p "请选择 [0-3]: " install_choice
 
     case "$install_choice" in
         1) TARGET_FW="ufw" ;;
         2) TARGET_FW="firewalld" ;;
         3) TARGET_FW="iptables" ;;
+        0) echo "已取消安装，返回上一级菜单。"; return ;;
         *) printf "${RED}❌ 无效的选择。\n${NC}"; return ;;
     esac
 
-    has_other_fw=0
-    other_fw_name=""
-
-    if [ "$TARGET_FW" != "ufw" ] && command -v ufw >/dev/null 2>&1; then
-        has_other_fw=1; other_fw_name="UFW"
-    elif [ "$TARGET_FW" != "firewalld" ] && command -v firewall-cmd >/dev/null 2>&1; then
-        has_other_fw=1; other_fw_name="Firewalld"
-    fi
-
-    if [ "$TARGET_FW" == "ufw" ] && command -v ufw >/dev/null 2>&1; then
-        printf "${GREEN}✔ 检测到系统已经安装了 UFW 防火墙，无需重复安装！\n${NC}"
-        return
-    elif [ "$TARGET_FW" == "firewalld" ] && command -v firewall-cmd >/dev/null 2>&1; then
-        printf "${GREEN}✔ 检测到系统已经安装了 Firewalld 防火墙，无需重复安装！\n${NC}"
-        return
-    fi
-
-    if [ "$has_other_fw" -eq 1 ]; then
-        printf "${RED}❌ 检测到系统当前已安装了【${other_fw_name}】防火墙！\n${NC}"
-        printf "${YELLOW}⚠️ 为了防止多防火墙冲突导致规则失效，请先手动卸载现有的 ${other_fw_name} 后再尝试安装新防火墙。\n${NC}"
-        return
+    if [ "$FW_TYPE" != "none" ]; then
+        if [ "$FW_TYPE" == "$TARGET_FW" ]; then
+            printf "${YELLOW}⚠️ 检测到当前系统【已经安装】了 $TARGET_FW 防火墙，无需重复安装！\n${NC}"
+            return
+        else
+            printf "${RED}❌ 检测到当前系统已存在 [$FW_TYPE] 防火墙。为避免冲突，请先通过第 6 项将其卸载，再安装新防火墙！\n${NC}"
+            return
+        fi
     fi
 
     echo "=== 正在开始安装 $TARGET_FW 防火墙 ==="
@@ -184,188 +124,294 @@ install_firewall() {
         ufw)
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -y && apt-get install -y ufw
+            ufw allow 22/tcp >/dev/null 2>&1
+            ufw allow 80/tcp >/dev/null 2>&1
+            ufw allow 443/tcp >/dev/null 2>&1
             systemctl enable ufw --now
-            printf "${GREEN}✔ UFW 防火墙安装并已设置开机自启完成。\n${NC}"
+            printf "${GREEN}✔ UFW 防火墙安装完成，并已自动放行默认基础端口 (22, 80, 443)。\n${NC}"
             ;;
         firewalld)
-            if command -v dnf >/dev/null 2>&1; then
-                dnf install -y firewalld
-            elif command -v apt-get >/dev/null 2>&1; then
-                apt-get update -y && apt-get install -y firewalld
-            else
-                yum install -y firewalld
-            fi
+            apt-get update -y && apt-get install -y firewalld 2>/dev/null || yum install -y firewalld
             systemctl enable firewalld --now
-            printf "${GREEN}✔ Firewalld 防火墙安装并已设置开机自启完成。\n${NC}"
+            firewall-cmd --permanent --zone=public --add-port=22/tcp >/dev/null 2>&1
+            firewall-cmd --permanent --zone=public --add-port=80/tcp >/dev/null 2>&1
+            firewall-cmd --permanent --zone=public --add-port=443/tcp >/dev/null 2>&1
+            firewall-cmd --reload >/dev/null 2>&1
+            printf "${GREEN}✔ Firewalld 防火墙安装完成，并已自动放行默认基础端口 (22, 80, 443)。\n${NC}"
             ;;
         iptables)
-            if command -v apt-get >/dev/null 2>&1; then
-                apt-get update -y && apt-get install -y iptables iptables-persistent
-            elif command -v yum >/dev/null 2>&1; then
-                yum install -y iptables iptables-services
-            elif command -v apk >/dev/null 2>&1; then
-                apk update && apk add --no-cache iptables
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y && apt-get install -y iptables iptables-persistent 2>/dev/null || yum install -y iptables iptables-services
+            iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+            iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+            iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+            if command -v netfilter-persistent &>/dev/null; then
+                netfilter-persistent save >/dev/null 2>&1
+            elif [ -d /etc/sysconfig ]; then
+                iptables-save > /etc/sysconfig/iptables 2>/dev/null
             fi
-            printf "${GREEN}✔ Iptables 防火墙安装完成。\n${NC}"
+            printf "${GREEN}✔ Iptables 安装完成，并已自动放行默认基础端口 (22, 80, 443)。\n${NC}"
             ;;
     esac
-    get_distro_and_fw
+    hash -r 2>/dev/null
 }
 
-# ----------------- 4. 智能检测并启停防火墙 -----------------
+# ----------------- 3. 智能检测并启停防火墙（三大防火墙逻辑统一） -----------------
 control_firewall() {
-    echo "=================================================="
-    echo "=== 正在智能检测防火墙当前运行状态 ==="
-    echo "=================================================="
-
-    # 动态判断当前防火墙是否在运行
-    is_running=0
-    if [ "$FW_TYPE" == "ufw" ]; then
-        if ufw status | grep -q "Status: active"; then
-            is_running=1
-        fi
-    elif [ "$FW_TYPE" == "firewalld" ]; then
-        if systemctl is-active --quiet firewalld; then
-            is_running=1
-        fi
-    elif [ "$FW_TYPE" == "iptables" ]; then
-        # 简单判定：如果INPUT链有规则或者iptables服务启动
-        if iptables -L INPUT -n | grep -q "ACCEPT"; then
-            is_running=1
-        fi
-    fi
-
-    if [ "$is_running" -eq 1 ]; then
-        printf "${GREEN}✔ 当前防火墙状态：【运行中 (已开启)】\n${NC}"
-        read -p "检测到防火墙已开启，是否要将其【关闭】？[y/n]: " choice
-        if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
-            echo "正在关闭防火墙..."
-            if [ "$FW_TYPE" == "ufw" ]; then
-                ufw disable
-            elif [ "$FW_TYPE" == "firewalld" ]; then
-                systemctl disable --now firewalld
-            elif [ "$FW_TYPE" == "iptables" ]; then
-                iptables -F
-            fi
-            printf "${YELLOW}⚠️ 防火墙已成功关闭。\n${NC}"
-        else
-            echo "操作已取消。"
-        fi
-    else
-        printf "${YELLOW}⚠️ 当前防火墙状态：【未激活 (已关闭)】\n${NC}"
-        read -p "检测到防火墙已关闭，是否要将其【开启】？[y/n]: " choice
-        if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
-            echo "正在自动放行常用远程连接端口 (如 22 端口)，防止断开..."
-            if [ "$FW_TYPE" == "ufw" ]; then
-                ufw allow 22/tcp >/dev/null 2>&1
-                ufw enable
-            elif [ "$FW_TYPE" == "firewalld" ]; then
-                firewall-cmd --zone=public --add-service=ssh --permanent >/dev/null 2>&1
-                firewall-cmd --reload >/dev/null 2>&1
-                systemctl enable --now firewalld
-            elif [ "$FW_TYPE" == "iptables" ]; then
-                iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-            fi
-            printf "${GREEN}✔ 防火墙已成功开启，并已自动放行常用 SSH 端口（22）。\n${NC}"
-        else
-            echo "操作已取消。"
-        fi
-    fi
-}
-
-# ----------------- 5. 放行端口功能（全防火墙强化适配） -----------------
-allow_port() {
-    read -p "请输入要放行的端口号 (例如 80 或 443): " PORT
-    read -p "请选择协议类型 [1. tcp / 2. udp / 3. 两者都要]: " PROTO_CHOICE
-
-    case "$PROTO_CHOICE" in
-        1) PROTO="tcp" ;;
-        2) PROTO="udp" ;;
-        3) PROTO="both" ;;
-        *) PROTO="tcp" ;;
-    esac
-
-    if [ -z "$PORT" ]; then
-        printf "${RED}❌ 端口号不能为空！\n${NC}"
+    get_distro_and_fw
+    if [ "$FW_TYPE" == "none" ]; then
+        printf "${RED}❌ 当前系统未检测到防火墙，请先通过第 2 项进行安装！\n${NC}"
         return
     fi
 
-    echo "=== 正在放行端口: $PORT ($PROTO) [防火墙类型: $FW_TYPE] ==="
-    
-    if [ "$FW_TYPE" == "ufw" ]; then
-        if [ "$PROTO" == "both" ]; then
-            ufw allow "$PORT"/tcp
-            ufw allow "$PORT"/udp
-        else
-            ufw allow "$PORT"/"$PROTO"
+    case "$FW_TYPE" in
+        ufw)
+            if ufw status | grep -q "Status: active"; then
+                read -p "防火墙运行中，是否将其【关闭】？[y/n]: " choice
+                if [ "$choice" = "y" ]; then
+                    ufw disable >/dev/null 2>&1
+                    printf "${YELLOW}⚠️ 防火墙已关闭\n${NC}"
+                fi
+            else
+                read -p "防火墙已关闭，是否将其【开启】？[y/n]: " choice
+                if [ "$choice" = "y" ]; then
+                    ufw allow 22/tcp >/dev/null 2>&1
+                    ufw allow 80/tcp >/dev/null 2>&1
+                    ufw allow 443/tcp >/dev/null 2>&1
+                    ufw --force enable >/dev/null 2>&1
+                    printf "${GREEN}✔ 防火墙已开启，并已自动安全放行默认基础端口 (22, 80, 443)\n${NC}"
+                fi
+            fi
+            ;;
+        firewalld)
+            if systemctl is-active --quiet firewalld; then
+                read -p "防火墙运行中，是否将其【关闭】？[y/n]: " choice
+                if [ "$choice" = "y" ]; then
+                    systemctl stop firewalld >/dev/null 2>&1
+                    systemctl disable firewalld >/dev/null 2>&1
+                    printf "${YELLOW}⚠️ 防火墙已关闭\n${NC}"
+                fi
+            else
+                read -p "防火墙已关闭，是否将其【开启】？[y/n]: " choice
+                if [ "$choice" = "y" ]; then
+                    firewall-cmd --permanent --zone=public --add-port=22/tcp >/dev/null 2>&1
+                    firewall-cmd --permanent --zone=public --add-port=80/tcp >/dev/null 2>&1
+                    firewall-cmd --permanent --zone=public --add-port=443/tcp >/dev/null 2>&1
+                    systemctl enable --now firewalld >/dev/null 2>&1
+                    firewall-cmd --reload >/dev/null 2>&1
+                    printf "${GREEN}✔ 防火墙已开启，并已自动安全放行默认基础端口 (22, 80, 443)\n${NC}"
+                fi
+            fi
+            ;;
+        iptables)
+            RULE_COUNT=$(iptables -S INPUT 2>/dev/null | grep -v -- "-P INPUT ACCEPT" | wc -l)
+            
+            if [ "$RULE_COUNT" -gt 0 ]; then
+                read -p "防火墙运行中，是否将其【关闭】？[y/n]: " choice
+                if [ "$choice" = "y" ]; then
+                    iptables -F
+                    printf "${YELLOW}⚠️ 防火墙已关闭\n${NC}"
+                fi
+            else
+                read -p "防火墙已关闭，是否将其【开启】？[y/n]: " choice
+                if [ "$choice" = "y" ]; then
+                    iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+                    iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+                    iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+                    printf "${GREEN}✔ 防火墙已开启，并已自动安全放行默认基础端口 (22, 80, 443)\n${NC}"
+                fi
+            fi
+            ;;
+        *)
+            printf "${RED}❌ 未知的防火墙类型。\n${NC}"
+            ;;
+    esac
+}
+
+# ----------------- 4. 放行端口（带 TCP/UDP 协议选择与端口范围校验） -----------------
+allow_port() {
+    get_distro_and_fw
+    if [ "$FW_TYPE" == "none" ]; then
+        printf "${RED}❌ 当前系统无防火墙，无法放行端口！\n${NC}"
+        return
+    fi
+
+    read -p "请输入要放行的端口或范围 (例如 80 或 8000-8009): " PORT
+    if [ -z "$PORT" ]; then
+        printf "${RED}❌ 端口不能为空！\n${NC}"
+        return
+    fi
+
+    # 校验端口是否在 1-65535 范围内（支持单个端口或范围格式如 8000-8009）
+    if [[ "$PORT" =~ ^[0-9]+-[0-9]+$ ]]; then
+        P_START=$(echo "$PORT" | cut -d'-' -f1)
+        P_END=$(echo "$PORT" | cut -d'-' -f2)
+        if [ "$P_START" -lt 1 ] || [ "$P_START" -gt 65535 ] || [ "$P_END" -lt 1 ] || [ "$P_END" -gt 65535 ] || [ "$P_START" -gt "$P_END" ]; then
+            printf "${RED}❌ 错误：端口范围必须在 1 到 65535 之间，且起始端口不能大于结束端口！\n${NC}"
+            return
         fi
-        ufw reload
+    elif [[ "$PORT" =~ ^[0-9]+$ ]]; then
+        if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+            printf "${RED}❌ 错误：端口号必须在 1 到 65535 之间！\n${NC}"
+            return
+        fi
+    else
+        printf "${RED}❌ 错误：输入的端口格式无效！\n${NC}"
+        return
+    fi
+
+    echo "请选择协议类型："
+    echo " 1. TCP"
+    echo " 2. UDP"
+    echo " 3. TCP 和 UDP 同时放行"
+    read -p "请选择 [1-3]: " proto_choice
+
+    case "$proto_choice" in
+        1) PROTO="tcp" ;;
+        2) PROTO="udp" ;;
+        3) PROTO="both" ;;
+        *) printf "${RED}❌ 无效的选择，默认采用 TCP。\n${NC}"; PROTO="tcp" ;;
+    esac
+
+    if [ "$FW_TYPE" == "ufw" ] && ([ -x /usr/sbin/ufw ] || [ -x /sbin/ufw ]); then
+        UFW_PORT=$(echo "$PORT" | tr '-' ':')
+        if [ "$PROTO" == "both" ]; then
+            ufw allow "$UFW_PORT"/tcp
+            ufw allow "$UFW_PORT"/udp
+            printf "${GREEN}✔ 端口 ${PORT} (TCP与UDP) 已成功放行！\n${NC}"
+        else
+            ufw allow "$UFW_PORT"/"$PROTO"
+            printf "${GREEN}✔ 端口 ${PORT} (${PROTO^^}) 已成功放行！\n${NC}"
+        fi
     elif [ "$FW_TYPE" == "firewalld" ]; then
         if [ "$PROTO" == "both" ]; then
-            firewall-cmd --zone=public --add-port="$PORT"/tcp --permanent
-            firewall-cmd --zone=public --add-port="$PORT"/udp --permanent
+            firewall-cmd --permanent --zone=public --add-port="$PORT"/tcp >/dev/null 2>&1
+            firewall-cmd --permanent --zone=public --add-port="$PORT"/udp >/dev/null 2>&1
+            firewall-cmd --reload >/dev/null 2>&1
+            printf "${GREEN}✔ 端口 ${PORT} (TCP与UDP) 已成功放行！\n${NC}"
         else
-            firewall-cmd --zone=public --add-port="$PORT"/"$PROTO" --permanent
+            firewall-cmd --permanent --zone=public --add-port="$PORT"/"$PROTO" >/dev/null 2>&1
+            firewall-cmd --reload >/dev/null 2>&1
+            printf "${GREEN}✔ 端口 ${PORT} (${PROTO^^}) 已成功放行！\n${NC}"
         fi
-        firewall-cmd --reload
     elif [ "$FW_TYPE" == "iptables" ]; then
         if [ "$PROTO" == "both" ]; then
             iptables -A INPUT -p tcp --dport "$PORT" -j ACCEPT
             iptables -A INPUT -p udp --dport "$PORT" -j ACCEPT
+            printf "${GREEN}✔ 端口 ${PORT} (TCP与UDP) 已成功放行！\n${NC}"
         else
             iptables -A INPUT -p "$PROTO" --dport "$PORT" -j ACCEPT
+            printf "${GREEN}✔ 端口 ${PORT} (${PROTO^^}) 已成功放行！\n${NC}"
         fi
-    else
-        printf "${RED}❌ 未知的防火墙类型，无法放行端口。\n${NC}"
-        return
     fi
-    
-    printf "${GREEN}✔ 端口 ${PORT} (${PROTO}) 放行规则已成功写入并生效！\n${NC}"
 }
 
-# ----------------- 6. 删除/关闭已放行端口功能 -----------------
+# ----------------- 5. 删除端口（带 TCP/UDP 协议选择） -----------------
 delete_port() {
-    read -p "请输入要删除/关闭的端口号: " PORT
-    read -p "请选择协议类型 [1. tcp / 2. udp / 3. 两者都要]: " PROTO_CHOICE
+    get_distro_and_fw
+    if [ "$FW_TYPE" == "none" ]; then
+        printf "${RED}❌ 当前系统无防火墙！\n${NC}"
+        return
+    fi
 
-    case "$PROTO_CHOICE" in
+    read -p "请输入要删除的端口或范围: " PORT
+    if [ -z "$PORT" ]; then
+        printf "${RED}❌ 端口不能为空！\n${NC}"
+        return
+    fi
+
+    echo "请选择要删除的协议类型："
+    echo " 1. TCP"
+    echo " 2. UDP"
+    echo " 3. TCP 和 UDP 都删除"
+    read -p "请选择 [1-3]: " proto_choice
+
+    case "$proto_choice" in
         1) PROTO="tcp" ;;
         2) PROTO="udp" ;;
         3) PROTO="both" ;;
-        *) PROTO="tcp" ;;
+        *) printf "${RED}❌ 无效的选择，默认操作 TCP。\n${NC}"; PROTO="tcp" ;;
     esac
 
-    if [ -z "$PORT" ]; then
-        printf "${RED}❌ 端口号不能为空！\n${NC}"
+    if [ "$FW_TYPE" == "ufw" ] && ([ -x /usr/sbin/ufw ] || [ -x /sbin/ufw ]); then
+        UFW_PORT=$(echo "$PORT" | tr '-' ':')
+        if [ "$PROTO" == "both" ]; then
+            ufw delete allow "$UFW_PORT"/tcp >/dev/null 2>&1
+            ufw delete allow "$UFW_PORT"/udp >/dev/null 2>&1
+            printf "${GREEN}✔ 端口 ${PORT} (TCP与UDP) 规则已移除。\n${NC}"
+        else
+            ufw delete allow "$UFW_PORT"/"$PROTO" >/dev/null 2>&1
+            printf "${GREEN}✔ 端口 ${PORT} (${PROTO^^}) 规则已移除。\n${NC}"
+        fi
+    elif [ "$FW_TYPE" == "firewalld" ]; then
+        if [ "$PROTO" == "both" ]; then
+            firewall-cmd --permanent --zone=public --remove-port="$PORT"/tcp >/dev/null 2>&1
+            firewall-cmd --permanent --zone=public --remove-port="$PORT"/udp >/dev/null 2>&1
+            firewall-cmd --reload >/dev/null 2>&1
+            printf "${GREEN}✔ 端口 ${PORT} (TCP与UDP) 规则已移除。\n${NC}"
+        else
+            firewall-cmd --permanent --zone=public --remove-port="$PORT"/"$PROTO" >/dev/null 2>&1
+            firewall-cmd --reload >/dev/null 2>&1
+            printf "${GREEN}✔ 端口 ${PORT} (${PROTO^^}) 规则已移除。\n${NC}"
+        fi
+    elif [ "$FW_TYPE" == "iptables" ]; then
+        if [ "$PROTO" == "both" ]; then
+            iptables -D INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null
+            iptables -D INPUT -p udp --dport "$PORT" -j ACCEPT 2>/dev/null
+            printf "${GREEN}✔ 端口 ${PORT} (TCP与UDP) 规则已移除。\n${NC}"
+        else
+            iptables -D INPUT -p "$PROTO" --dport "$PORT" -j ACCEPT 2>/dev/null
+            printf "${GREEN}✔ 端口 ${PORT} (${PROTO^^}) 规则已移除。\n${NC}"
+        fi
+    fi
+}
+
+# ----------------- 6. 完全卸载当前防火墙服务 -----------------
+uninstall_firewall() {
+    get_distro_and_fw
+    echo "=================================================="
+    echo "=== 正在准备卸载防火墙 ==="
+    echo "当前识别的防火墙类型: $FW_TYPE"
+    echo "=================================================="
+
+    if [ "$FW_TYPE" == "none" ]; then
+        printf "${YELLOW}⚠️ 系统中当前没有安装任何可卸载的防火墙。\n${NC}"
         return
     fi
 
-    echo "=== 正在移除端口规则: $PORT ($PROTO) ==="
-    if [ "$FW_TYPE" == "ufw" ]; then
-        if [ "$PROTO" == "both" ]; then
-            ufw delete allow "$PORT"/tcp >/dev/null 2>&1
-            ufw delete allow "$PORT"/udp >/dev/null 2>&1
-        else
-            ufw delete allow "$PORT"/"$PROTO" >/dev/null 2>&1
-        fi
-        ufw reload
-    elif [ "$FW_TYPE" == "firewalld" ]; then
-        if [ "$PROTO" == "both" ]; then
-            firewall-cmd --zone=public --remove-port="$PORT"/tcp --permanent
-            firewall-cmd --zone=public --remove-port="$PORT"/udp --permanent
-        else
-            firewall-cmd --zone=public --remove-port="$PORT"/"$PROTO" --permanent
-        fi
-        firewall-cmd --reload
-    elif [ "$FW_TYPE" == "iptables" ]; then
-        if [ "$PROTO" == "both" ]; then
-            iptables -D INPUT -p tcp --dport "$PORT" -j ACCEPT
-            iptables -D INPUT -p udp --dport "$PORT" -j ACCEPT
-        else
-            iptables -D INPUT -p "$PROTO" --dport "$PORT" -j ACCEPT
-        fi
+    read -p "⚠️ 确认要彻底卸载防火墙并清空规则吗？[y/N]: " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "操作已取消。"
+        return
     fi
-    printf "${GREEN}✔ 端口 ${PORT} 规则已移除。\n${NC}"
+
+    case "$FW_TYPE" in
+        ufw)
+            ufw disable >/dev/null 2>&1
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get purge -y ufw >/dev/null 2>&1
+            apt-get autoremove -y >/dev/null 2>&1
+            rm -f /usr/sbin/ufw /sbin/ufw
+            rm -rf /etc/ufw /lib/ufw /etc/default/ufw
+            printf "${GREEN}✔ UFW 防火墙已被完全卸载并深度清理残留！\n${NC}"
+            ;;
+        firewalld)
+            systemctl disable --now firewalld >/dev/null 2>&1
+            apt-get purge -y firewalld >/dev/null 2>&1 || yum remove -y firewalld >/dev/null 2>&1
+            rm -rf /etc/firewalld
+            printf "${GREEN}✔ Firewalld 防火墙已被完全卸载！\n${NC}"
+            ;;
+        iptables)
+            iptables -F
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get purge -y iptables iptables-persistent >/dev/null 2>&1 || yum remove -y iptables iptables-services >/dev/null 2>&1
+            printf "${GREEN}✔ Iptables 已卸载！\n${NC}"
+            ;;
+    esac
+    
+    hash -r 2>/dev/null
+    get_distro_and_fw
+    echo "当前最新状态已重置为: $FW_TYPE"
 }
 
 # ----------------- 主菜单循环 -----------------
@@ -374,41 +420,24 @@ while true; do
     printf "${SKYBLUE}=========================================\n${NC}"
     printf "${SKYBLUE}       🛡️ 多系统防火墙管理子脚本 🛡️        \n${NC}"
     printf "${SKYBLUE}=========================================\n${NC}"
-    echo " 1. 检测系统防火墙安装与运行状态"
-    echo " 2. 查看已放行的端口列表"
-    echo " 3. 安装指定防火墙 (带冲突检测)"
-    echo " 4. 智能开启 / 关闭防火墙服务"
-    echo " 5. 放行指定端口 (TCP/UDP)"
-    echo " 6. 删除指定端口规则"
+    echo " 1. 检测系统防火墙安装、状态与端口规则"
+    echo " 2. 安装指定防火墙 (带冲突检测)"
+    echo " 3. 智能开启 / 关闭防火墙服务"
+    echo " 4. 放行指定端口或范围 (支持 TCP/UDP 选择)"
+    echo " 5. 删除指定端口或范围规则 (支持 TCP/UDP 选择)"
+    echo " 6. 完全卸载当前防火墙服务"
     echo " 0. 退出当前防火墙子菜单"
     printf "${SKYBLUE}=========================================\n${NC}"
     read -p "请选择操作 [0-6]: " CHOICE
 
     case "$CHOICE" in
-        1)
-            check_firewall_status
-            ;;
-        2)
-            list_allowed_ports
-            ;;
-        3)
-            install_firewall
-            ;;
-        4)
-            control_firewall
-            ;;
-        5)
-            allow_port
-            ;;
-        6)
-            delete_port
-            ;;
-        0)
-            echo "已退出防火墙管理子菜单。"
-            break
-            ;;
-        *)
-            printf "${RED}❌ 无效选项，请输入 0 到 6 之间的数字。\n${NC}"
-            ;;
+        1) check_firewall_status ;;
+        2) install_firewall ;;
+        3) control_firewall ;;
+        4) allow_port ;;
+        5) delete_port ;;
+        6) uninstall_firewall ;;
+        0) echo "已退出防火墙管理子菜单。"; break ;;
+        *) printf "${RED}❌ 无效选项，请输入 0 到 6 之间的数字。\n${NC}" ;;
     esac
 done
