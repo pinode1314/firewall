@@ -143,7 +143,6 @@ list_allowed_ports() {
 
 # ----------------- 3. 安装防火墙功能（带智能检测） -----------------
 install_firewall() {
-    # 先检查是否已经安装
     if [ "$FW_TYPE" == "ufw" ] && command -v ufw >/dev/null 2>&1; then
         printf "${GREEN}✔ 检测到系统已经安装了 UFW 防火墙，无需重复安装！\n${NC}"
         return
@@ -182,7 +181,7 @@ install_firewall() {
     esac
 }
 
-# ----------------- 4. 启停与控制防火墙 -----------------
+# ----------------- 4. 启停与控制防火墙（自带默认放行常用端口规则） -----------------
 control_firewall() {
     echo " 1. 开启 / 启动防火墙"
     echo " 2. 关闭 / 停止防火墙"
@@ -190,12 +189,18 @@ control_firewall() {
     
     case "$sub_choice" in
         1)
+            echo "正在自动放行常用远程连接端口 (如 22 端口)，防止断开..."
             if [ "$FW_TYPE" == "ufw" ]; then
+                ufw allow 22/tcp >/dev/null 2>&1
                 ufw enable
             elif [ "$FW_TYPE" == "firewalld" ]; then
+                firewall-cmd --zone=public --add-service=ssh --permanent >/dev/null 2>&1
+                firewall-cmd --reload >/dev/null 2>&1
                 systemctl enable --now firewalld
+            elif [ "$FW_TYPE" == "iptables" ]; then
+                iptables -A INPUT -p tcp --dport 22 -j ACCEPT
             fi
-            printf "${GREEN}✔ 防火墙已成功开启。\n${NC}"
+            printf "${GREEN}✔ 防火墙已成功开启，并已自动放行常用 SSH 端口（22）。\n${NC}"
             ;;
         2)
             if [ "$FW_TYPE" == "ufw" ]; then
