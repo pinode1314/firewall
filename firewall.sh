@@ -55,7 +55,8 @@ check_firewall_status() {
         ufw)
             if command -v ufw >/dev/null 2>&1; then
                 printf "${GREEN}✔ UFW 已安装 / UFW Installed\n${NC}"
-                ufw status verbose
+                # 捕获并汉化 UFW 状态
+                ufw status verbose | sed 's/Status: inactive/状态: 未激活 (已关闭)/g; s/Status: active/状态: 已激活 (运行中)/g'
             else
                 printf "${YELLOW}⚠️ UFW 未安装 / UFW Not Installed\n${NC}"
             fi
