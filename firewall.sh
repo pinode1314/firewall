@@ -305,7 +305,7 @@ while true; do
             delete_port
             ;;
         0)
-            echo "已退出防火墙管理子脚本。"
+            echo "已退出防火墙管理子菜单。"
             break
             ;;
         *)
