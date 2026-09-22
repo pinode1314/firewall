@@ -119,29 +119,24 @@ install_firewall() {
         fi
     fi
 
-    echo "=== 正在开始安装 $TARGET_FW 防火墙 ==="
+    echo "=== 正在配置 $TARGET_FW 防火墙 ==="
     case "$TARGET_FW" in
         ufw)
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -y && apt-get install -y ufw
             ufw allow 22/tcp >/dev/null 2>&1
             ufw allow 80/tcp >/dev/null 2>&1
             ufw allow 443/tcp >/dev/null 2>&1
             systemctl enable ufw --now
-            printf "${GREEN}✔ UFW 防火墙安装完成，并已自动放行默认基础端口 (22, 80, 443)。\n${NC}"
+            printf "${GREEN}✔ UFW 防火墙配置完成，并已自动放行默认基础端口 (22, 80, 443)。\n${NC}"
             ;;
         firewalld)
-            apt-get update -y && apt-get install -y firewalld 2>/dev/null || yum install -y firewalld
             systemctl enable firewalld --now
             firewall-cmd --permanent --zone=public --add-port=22/tcp >/dev/null 2>&1
             firewall-cmd --permanent --zone=public --add-port=80/tcp >/dev/null 2>&1
             firewall-cmd --permanent --zone=public --add-port=443/tcp >/dev/null 2>&1
             firewall-cmd --reload >/dev/null 2>&1
-            printf "${GREEN}✔ Firewalld 防火墙安装完成，并已自动放行默认基础端口 (22, 80, 443)。\n${NC}"
+            printf "${GREEN}✔ Firewalld 防火墙配置完成，并已自动放行默认基础端口 (22, 80, 443)。\n${NC}"
             ;;
         iptables)
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -y && apt-get install -y iptables iptables-persistent 2>/dev/null || yum install -y iptables iptables-services
             iptables -A INPUT -p tcp --dport 22 -j ACCEPT
             iptables -A INPUT -p tcp --dport 80 -j ACCEPT
             iptables -A INPUT -p tcp --dport 443 -j ACCEPT
@@ -150,7 +145,7 @@ install_firewall() {
             elif [ -d /etc/sysconfig ]; then
                 iptables-save > /etc/sysconfig/iptables 2>/dev/null
             fi
-            printf "${GREEN}✔ Iptables 安装完成，并已自动放行默认基础端口 (22, 80, 443)。\n${NC}"
+            printf "${GREEN}✔ Iptables 配置完成，并已自动放行默认基础端口 (22, 80, 443)。\n${NC}"
             ;;
     esac
     hash -r 2>/dev/null
@@ -370,16 +365,16 @@ delete_port() {
 uninstall_firewall() {
     get_distro_and_fw
     echo "=================================================="
-    echo "=== 正在准备卸载防火墙 ==="
+    echo "=== 正在准备清理防火墙 ==="
     echo "当前识别的防火墙类型: $FW_TYPE"
     echo "=================================================="
 
     if [ "$FW_TYPE" == "none" ]; then
-        printf "${YELLOW}⚠️ 系统中当前没有安装任何可卸载的防火墙。\n${NC}"
+        printf "${YELLOW}⚠️ 系统中当前没有识别到任何可操作的防火墙。\n${NC}"
         return
     fi
 
-    read -p "⚠️ 确认要彻底卸载防火墙并清空规则吗？[y/N]: " confirm
+    read -p "⚠️ 确认要清空防火墙规则并停用服务吗？[y/N]: " confirm
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
         echo "操作已取消。"
         return
@@ -388,24 +383,18 @@ uninstall_firewall() {
     case "$FW_TYPE" in
         ufw)
             ufw disable >/dev/null 2>&1
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get purge -y ufw >/dev/null 2>&1
-            apt-get autoremove -y >/dev/null 2>&1
             rm -f /usr/sbin/ufw /sbin/ufw
             rm -rf /etc/ufw /lib/ufw /etc/default/ufw
-            printf "${GREEN}✔ UFW 防火墙已被完全卸载并深度清理残留！\n${NC}"
+            printf "${GREEN}✔ UFW 防火墙已停用并深度清理相关配置！\n${NC}"
             ;;
         firewalld)
             systemctl disable --now firewalld >/dev/null 2>&1
-            apt-get purge -y firewalld >/dev/null 2>&1 || yum remove -y firewalld >/dev/null 2>&1
             rm -rf /etc/firewalld
-            printf "${GREEN}✔ Firewalld 防火墙已被完全卸载！\n${NC}"
+            printf "${GREEN}✔ Firewalld 防火墙已停用！\n${NC}"
             ;;
         iptables)
             iptables -F
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get purge -y iptables iptables-persistent >/dev/null 2>&1 || yum remove -y iptables iptables-services >/dev/null 2>&1
-            printf "${GREEN}✔ Iptables 已卸载！\n${NC}"
+            printf "${GREEN}✔ Iptables 规则已清空！\n${NC}"
             ;;
     esac
     
